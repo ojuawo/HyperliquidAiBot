@@ -1,3 +1,4 @@
+using HyperliquidAiBot.Core.Config;
 using HyperliquidAiBot.Core.Models;
 using HyperliquidAiBot.Core.Services;
 using Nethereum.Signer.EIP712;
@@ -93,5 +94,24 @@ public class Eip712SigningTests
 
         Assert.True(expectedAddress.IsTheSameAddress(recoveredAddress),
             $"Recovered address {recoveredAddress} did not match expected signer {expectedAddress}");
+    }
+
+    [Fact(Skip = "Live network integration test")]
+    public async Task LiveTest_GetUniverseAndCandles()
+    {
+        var httpClient = new HttpClient();
+        var settings = Microsoft.Extensions.Options.Options.Create(new BotSettings
+        {
+            Hyperliquid = new HyperliquidSettings { UseTestnet = true }
+        });
+        var client = new HyperliquidClient(httpClient, settings, Microsoft.Extensions.Logging.Abstractions.NullLogger<HyperliquidClient>.Instance);
+
+        var meta = await client.GetUniverseMetaAsync();
+        Assert.NotNull(meta);
+        Assert.NotEmpty(meta.Universe);
+
+        var candles = await client.GetCandleSnapshotAsync("BTC", "1h", 10);
+        Assert.NotNull(candles);
+        Assert.NotEmpty(candles);
     }
 }

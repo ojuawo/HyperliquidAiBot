@@ -120,14 +120,19 @@ public class TradingWorker : BackgroundService
             await InitializeUniverseMetadataAsync(ct);
             if (!_assetLookup.TryGetValue(targetAsset, out assetMeta))
             {
-                _logger.LogError("Unable to resolve asset {Asset}. Skipping cycle.", targetAsset);
+                var msg = $"Unable to resolve perpetual asset '{targetAsset}' from exchange.";
+                _logger.LogError("{Msg} Skipping cycle.", msg);
+                _botStateService.RecordCycle(
+                    new MarketContext { Asset = targetAsset },
+                    new TradeDecision { Action = TradeAction.Hold, Reasoning = msg },
+                    RiskEvaluation.Reject(msg, TradeAction.Hold, 0m));
                 return;
             }
         }
 
         // 2. Ingest Candles
-        _logger.LogInformation("Ingesting {Limit} candles of timeframe {Interval}...",
-            _settings.Hyperliquid.CandleLimit, _settings.Hyperliquid.CandleInterval);
+        _logger.LogInformation("Ingesting {Limit} candles of timeframe {Interval} for {Asset}...",
+            _settings.Hyperliquid.CandleLimit, _settings.Hyperliquid.CandleInterval, targetAsset);
         var candles = await _hyperliquidClient.GetCandleSnapshotAsync(
             targetAsset,
             _settings.Hyperliquid.CandleInterval,
@@ -136,7 +141,12 @@ public class TradingWorker : BackgroundService
 
         if (candles.Count == 0)
         {
-            _logger.LogWarning("No candles retrieved for {Asset}. Skipping cycle.", targetAsset);
+            var msg = $"No historical candles returned by exchange for '{targetAsset}'.";
+            _logger.LogWarning("{Msg} Skipping cycle.", msg);
+            _botStateService.RecordCycle(
+                new MarketContext { Asset = targetAsset, AssetIndex = assetMeta.Index },
+                new TradeDecision { Action = TradeAction.Hold, Reasoning = msg },
+                RiskEvaluation.Reject(msg, TradeAction.Hold, 0m));
             return;
         }
 
@@ -322,6 +332,13 @@ public class TradingWorker : BackgroundService
         try
         {
             var path = _settings.Execution.HeartbeatFilePath;
+            if (string.IsNullOrWhiteSpace(path)) return;
+
+            if (OperatingSystem.IsWindows() && (path.StartsWith("/tmp") || path.StartsWith("\\tmp")))
+            {
+                path = Path.Combine(Path.GetTempPath(), "hyperliquid_bot_heartbeat.json");
+            }
+
             var dir = Path.GetDirectoryName(path);
             if (!string.IsNullOrWhiteSpace(dir) && !Directory.Exists(dir))
             {
