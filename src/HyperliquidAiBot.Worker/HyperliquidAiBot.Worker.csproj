@@ -4,6 +4,7 @@
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <AspNetCoreHostingModel>OutOfProcess</AspNetCoreHostingModel>
     <UserSecretsId>dotnet-HyperliquidAiBot.Worker-f9dc3006-e31c-4200-9ac1-c7f2a2b42adf</UserSecretsId>
   </PropertyGroup>
 
