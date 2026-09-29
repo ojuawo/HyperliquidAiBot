@@ -147,9 +147,10 @@ You must output strictly conforming JSON matching the provided schema.";
 
         try
         {
+            var cleanApiKey = apiKey.Trim().Replace("\r", string.Empty).Replace("\n", string.Empty);
             _logger.LogInformation("Calling Google Gemini ({Model}) with structured schema...", ActiveModel);
             using var request = new HttpRequestMessage(HttpMethod.Post, url);
-            request.Headers.Add("x-goog-api-key", apiKey);
+            request.Headers.Add("x-goog-api-key", cleanApiKey);
             request.Content = JsonContent.Create(requestBody, options: _jsonOptions);
 
             var response = await _httpClient.SendAsync(request, ct);
@@ -258,8 +259,9 @@ You must output strictly conforming JSON matching the provided schema.";
 
         try
         {
+            var cleanApiKey = apiKey.Trim().Replace("\r", string.Empty).Replace("\n", string.Empty);
             using var req = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(baseUrl), "chat/completions"));
-            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", cleanApiKey);
             req.Content = JsonContent.Create(requestBody);
 
             var response = await _httpClient.SendAsync(req, ct);

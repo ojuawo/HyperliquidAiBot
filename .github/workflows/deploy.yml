@@ -40,7 +40,7 @@ jobs:
           if [ -n "$GEMINI_API_KEY" ]; then
             python3 - << 'PYEOF'
           import json, os
-          key = os.environ.get("GEMINI_API_KEY")
+          key = os.environ.get("GEMINI_API_KEY", "").strip()
           cfg = {"BotSettings": {"Llm": {"Provider": "Gemini", "Model": "gemini-3.5-flash", "ApiKey": key}}}
           with open("./publish/appsettings.Production.json", "w") as f:
               json.dump(cfg, f, indent=2)
