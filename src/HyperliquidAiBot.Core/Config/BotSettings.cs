@@ -7,11 +7,54 @@ public class BotSettings
 {
     public const string SectionName = "BotSettings";
 
+    public ExchangeSettings Exchange { get; set; } = new();
+    public BinanceSettings Binance { get; set; } = new();
+    public PaperTradingSettings PaperTrading { get; set; } = new();
     public HyperliquidSettings Hyperliquid { get; set; } = new();
     public LlmSettings Llm { get; set; } = new();
     public OpenAiSettings OpenAi { get; set; } = new(); // Backward compatibility
     public RiskRules Risk { get; set; } = new();
     public ExecutionSettings Execution { get; set; } = new();
+}
+
+public class ExchangeSettings
+{
+    /// <summary>
+    /// Active exchange adapter: "PaperTrading" (default zero-deposit live simulation), "Binance", or "Hyperliquid".
+    /// </summary>
+    public string ActiveExchange { get; set; } = "PaperTrading";
+
+    /// <summary>
+    /// Target trading symbol (e.g. "BTCUSDT", "ETHUSDT", "BTC").
+    /// </summary>
+    public string Symbol { get; set; } = "BTCUSDT";
+
+    /// <summary>
+    /// Candle interval for technical analysis (e.g. "1m", "5m", "15m", "1h", "4h", "1d").
+    /// </summary>
+    public string Interval { get; set; } = "1h";
+
+    /// <summary>
+    /// Number of historical candle snapshots to fetch for TA calculation.
+    /// </summary>
+    public int CandleLimit { get; set; } = 100;
+
+    /// <summary>
+    /// Frequency of trading worker evaluation loop in seconds.
+    /// </summary>
+    public int PollIntervalSeconds { get; set; } = 60;
+}
+
+public class BinanceSettings
+{
+    public bool UseTestnet { get; set; } = true;
+    public string ApiKey { get; set; } = string.Empty;
+    public string ApiSecret { get; set; } = string.Empty;
+}
+
+public class PaperTradingSettings
+{
+    public decimal StartingBalanceUsd { get; set; } = 10000m;
 }
 
 public class HyperliquidSettings

@@ -54,6 +54,24 @@ builder.Services.AddHttpClient<IResearchEngine, ResearchEngine>(client =>
 builder.Services.AddSingleton<ITechnicalAnalysisService, TechnicalAnalysisService>();
 builder.Services.AddSingleton<IRiskManager, RiskManager>();
 
+// Register Exchange Clients & Adapters
+builder.Services.AddHttpClient<PaperTradingExchangeClient>();
+builder.Services.AddHttpClient<BinanceFuturesExchangeClient>();
+builder.Services.AddSingleton<HyperliquidExchangeAdapter>();
+
+builder.Services.AddSingleton<IExchangeClient>(sp =>
+{
+    var opts = sp.GetRequiredService<IOptions<BotSettings>>().Value;
+    var active = opts.Exchange.ActiveExchange?.Trim().ToLowerInvariant() ?? "papertrading";
+
+    return active switch
+    {
+        "binance" or "binancefutures" => sp.GetRequiredService<BinanceFuturesExchangeClient>(),
+        "hyperliquid" => sp.GetRequiredService<HyperliquidExchangeAdapter>(),
+        _ => sp.GetRequiredService<PaperTradingExchangeClient>()
+    };
+});
+
 // Register Continuous Background Trading Worker
 builder.Services.AddHostedService<TradingWorker>();
 
@@ -64,10 +82,14 @@ app.UseDefaultFiles();
 app.UseStaticFiles();
 
 // Visual Dashboard API Endpoints
-app.MapGet("/api/status", (IBotStateService state, IRiskManager risk, IResearchEngine research, IOptions<BotSettings> options) =>
+app.MapGet("/api/status", (IBotStateService state, IRiskManager risk, IResearchEngine research, IExchangeClient exchange, IOptions<BotSettings> options) =>
 {
     var snapshot = state.GetSnapshot(risk.IsTradingFrozen, risk.DailyDrawdownPct);
     var settings = options.Value;
+    var targetSymbol = !string.IsNullOrWhiteSpace(settings.Exchange.Symbol)
+        ? settings.Exchange.Symbol
+        : (!string.IsNullOrWhiteSpace(settings.Hyperliquid.Asset) ? settings.Hyperliquid.Asset : "BTCUSDT");
+
     return Results.Json(new
     {
         snapshot.IsRunning,
@@ -80,9 +102,12 @@ app.MapGet("/api/status", (IBotStateService state, IRiskManager risk, IResearchE
         snapshot.RecentCycles,
         activeProvider = research.ActiveProvider,
         activeModel = research.ActiveModel,
-        useTestnet = settings.Hyperliquid.UseTestnet,
+        activeExchange = exchange.ExchangeName,
+        useTestnet = settings.Exchange.ActiveExchange.Equals("Binance", StringComparison.OrdinalIgnoreCase)
+            ? settings.Binance.UseTestnet
+            : settings.Hyperliquid.UseTestnet,
         dryRun = settings.Execution.DryRun,
-        asset = settings.Hyperliquid.Asset
+        asset = targetSymbol
     });
 });
 

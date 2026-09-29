@@ -9,12 +9,13 @@ using Microsoft.Extensions.Options;
 namespace HyperliquidAiBot.Worker;
 
 /// <summary>
-/// Continuous asynchronous trading worker orchestrating ingestion, TA calculation,
-/// LLM decision-making, deterministic risk validation, and order dispatch.
+/// Continuous asynchronous trading worker orchestrating universal market ingestion,
+/// technical analysis, LLM research decision-making, deterministic risk validation,
+/// and pluggable exchange order execution.
 /// </summary>
 public class TradingWorker : BackgroundService
 {
-    private readonly IHyperliquidClient _hyperliquidClient;
+    private readonly IExchangeClient _exchangeClient;
     private readonly ITechnicalAnalysisService _taService;
     private readonly IResearchEngine _researchEngine;
     private readonly IRiskManager _riskManager;
@@ -22,10 +23,8 @@ public class TradingWorker : BackgroundService
     private readonly BotSettings _settings;
     private readonly ILogger<TradingWorker> _logger;
 
-    private readonly Dictionary<string, (int Index, int SzDecimals, int MaxLeverage)> _assetLookup = new(StringComparer.OrdinalIgnoreCase);
-
     public TradingWorker(
-        IHyperliquidClient hyperliquidClient,
+        IExchangeClient exchangeClient,
         ITechnicalAnalysisService taService,
         IResearchEngine researchEngine,
         IRiskManager riskManager,
@@ -33,7 +32,7 @@ public class TradingWorker : BackgroundService
         IOptions<BotSettings> settings,
         ILogger<TradingWorker> logger)
     {
-        _hyperliquidClient = hyperliquidClient;
+        _exchangeClient = exchangeClient;
         _taService = taService;
         _researchEngine = researchEngine;
         _riskManager = riskManager;
@@ -44,15 +43,18 @@ public class TradingWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        var targetSymbol = ResolveTargetSymbol();
         _logger.LogInformation("================================================================================");
-        _logger.LogInformation("Hyperliquid AI Trading Bot starting. Target Asset: {Asset}, Testnet: {IsTestnet}",
-            _settings.Hyperliquid.Asset, _settings.Hyperliquid.UseTestnet);
+        _logger.LogInformation("Algorithmic Trading Bot initialized. Active Exchange: {Exchange}, Target Symbol: {Symbol}",
+            _exchangeClient.ExchangeName, targetSymbol);
         _logger.LogInformation("================================================================================");
 
-        // 1. Initialize Universe Metadata
-        await InitializeUniverseMetadataAsync(stoppingToken);
+        // Initialize exchange connection and metadata
+        await _exchangeClient.InitializeAsync(stoppingToken);
 
-        var intervalSeconds = Math.Max(10, _settings.Hyperliquid.PollIntervalSeconds);
+        var pollInterval = _settings.Exchange.PollIntervalSeconds > 0
+            ? _settings.Exchange.PollIntervalSeconds
+            : (_settings.Hyperliquid.PollIntervalSeconds > 0 ? _settings.Hyperliquid.PollIntervalSeconds : 60);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -69,298 +71,183 @@ public class TradingWorker : BackgroundService
                 _logger.LogError(ex, "Unhandled exception in trading execution loop");
             }
 
-            await _botStateService.WaitAsync(TimeSpan.FromSeconds(intervalSeconds), stoppingToken);
+            await _botStateService.WaitAsync(TimeSpan.FromSeconds(Math.Max(10, pollInterval)), stoppingToken);
         }
 
         _logger.LogInformation("Trading worker background execution stopped gracefully.");
     }
 
-    private async Task InitializeUniverseMetadataAsync(CancellationToken ct)
+    private string ResolveTargetSymbol()
     {
-        try
-        {
-            _logger.LogInformation("Fetching Hyperliquid perpetual universe metadata...");
-            var meta = await _hyperliquidClient.GetUniverseMetaAsync(ct);
-            _assetLookup.Clear();
+        if (!string.IsNullOrWhiteSpace(_settings.Exchange.Symbol))
+            return _settings.Exchange.Symbol;
+        if (!string.IsNullOrWhiteSpace(_settings.Hyperliquid.Asset))
+            return _settings.Hyperliquid.Asset;
+        return "BTCUSDT";
+    }
 
-            for (int i = 0; i < meta.Universe.Count; i++)
-            {
-                var asset = meta.Universe[i];
-                _assetLookup[asset.Name] = (i, asset.SzDecimals, asset.MaxLeverage);
-            }
+    private string ResolveInterval()
+    {
+        if (!string.IsNullOrWhiteSpace(_settings.Exchange.Interval))
+            return _settings.Exchange.Interval;
+        if (!string.IsNullOrWhiteSpace(_settings.Hyperliquid.CandleInterval))
+            return _settings.Hyperliquid.CandleInterval;
+        return "1h";
+    }
 
-            _logger.LogInformation("Discovered {Count} perpetual assets from exchange.", _assetLookup.Count);
-
-            if (_assetLookup.TryGetValue(_settings.Hyperliquid.Asset, out var assetInfo))
-            {
-                _logger.LogInformation("Resolved target asset '{Asset}': Index={Index}, SzDecimals={Decimals}, MaxLeverage={Leverage}x",
-                    _settings.Hyperliquid.Asset, assetInfo.Index, assetInfo.SzDecimals, assetInfo.MaxLeverage);
-            }
-            else
-            {
-                _logger.LogWarning("Target asset '{Asset}' not found in perpetual universe! Available sample: {Sample}",
-                    _settings.Hyperliquid.Asset, string.Join(", ", _assetLookup.Keys.Take(10)));
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to initialize universe metadata");
-        }
+    private int ResolveCandleLimit()
+    {
+        if (_settings.Exchange.CandleLimit > 0)
+            return _settings.Exchange.CandleLimit;
+        if (_settings.Hyperliquid.CandleLimit > 0)
+            return _settings.Hyperliquid.CandleLimit;
+        return 100;
     }
 
     private async Task ExecuteTradingCycleAsync(CancellationToken ct)
     {
-        var targetAsset = _settings.Hyperliquid.Asset;
-        _logger.LogInformation("--- Starting trading cycle for {Asset} at {Time:u} ---", targetAsset, DateTime.UtcNow);
+        var targetSymbol = ResolveTargetSymbol();
+        var interval = ResolveInterval();
+        var candleLimit = ResolveCandleLimit();
 
-        // 1. Resolve Asset Metadata
-        if (!_assetLookup.TryGetValue(targetAsset, out var assetMeta))
+        _logger.LogInformation("--- Starting trading cycle for {Symbol} on {Exchange} at {Time:u} ---",
+            targetSymbol, _exchangeClient.ExchangeName, DateTime.UtcNow);
+
+        // 1. Ingest Market Data
+        var marketSnapshot = await _exchangeClient.GetMarketDataAsync(targetSymbol, interval, candleLimit, ct);
+        if (marketSnapshot.Candles.Count == 0)
         {
-            _logger.LogWarning("Asset {Asset} metadata missing, attempting refresh...", targetAsset);
-            await InitializeUniverseMetadataAsync(ct);
-            if (!_assetLookup.TryGetValue(targetAsset, out assetMeta))
-            {
-                var msg = $"Unable to resolve perpetual asset '{targetAsset}' from exchange.";
-                _logger.LogError("{Msg} Skipping cycle.", msg);
-                _botStateService.RecordCycle(
-                    new MarketContext { Asset = targetAsset },
-                    new TradeDecision { Action = TradeAction.Hold, Reasoning = msg },
-                    RiskEvaluation.Reject(msg, TradeAction.Hold, 0m));
-                return;
-            }
-        }
-
-        // 2. Ingest Candles
-        _logger.LogInformation("Ingesting {Limit} candles of timeframe {Interval} for {Asset}...",
-            _settings.Hyperliquid.CandleLimit, _settings.Hyperliquid.CandleInterval, targetAsset);
-        var candles = await _hyperliquidClient.GetCandleSnapshotAsync(
-            targetAsset,
-            _settings.Hyperliquid.CandleInterval,
-            _settings.Hyperliquid.CandleLimit,
-            ct);
-
-        if (candles.Count == 0)
-        {
-            var msg = $"No historical candles returned by exchange for '{targetAsset}'.";
+            var msg = $"No historical candles returned for '{targetSymbol}'.";
             _logger.LogWarning("{Msg} Skipping cycle.", msg);
             _botStateService.RecordCycle(
-                new MarketContext { Asset = targetAsset, AssetIndex = assetMeta.Index },
+                new MarketContext { Asset = targetSymbol, CurrentPrice = marketSnapshot.CurrentPrice },
                 new TradeDecision { Action = TradeAction.Hold, Reasoning = msg },
                 RiskEvaluation.Reject(msg, TradeAction.Hold, 0m));
             return;
         }
 
-        var latestCandle = candles.OrderBy(c => c.OpenTimeMs).Last();
-        var currentPrice = latestCandle.CloseDecimal;
-
-        // 3. Compute Technical Indicators
-        var indicators = _taService.CalculateIndicators(candles);
-        _logger.LogInformation("Computed TA: RSI={Rsi:F2}, MACD={Macd:F4}, Signal={Signal}, EMA9={Ema9:F2}, EMA21={Ema21:F2}",
+        // 2. Compute Technical Analysis
+        var indicators = _taService.CalculateIndicators(marketSnapshot.Candles);
+        _logger.LogInformation("TA computed: RSI={Rsi:F2}, MACD={Macd:F4}, Trend={Trend}, EMA9={Ema9:F2}, EMA21={Ema21:F2}",
             indicators.Rsi, indicators.Macd, indicators.TrendSignal, indicators.Ema9, indicators.Ema21);
 
-        // 4. Ingest Account & Position State (if wallet configured)
-        decimal equity = 10000m; // Default simulation value
-        decimal availableMargin = 10000m;
-        decimal currentPositionSize = 0m;
-        decimal entryPrice = 0m;
-        decimal unrealizedPnl = 0m;
+        // 3. Ingest Portfolio & Positions
+        var portfolio = await _exchangeClient.GetAccountPortfolioAsync(ct);
+        var position = portfolio.GetPosition(targetSymbol);
 
-        if (!string.IsNullOrWhiteSpace(_settings.Hyperliquid.WalletAddress))
-        {
-            try
-            {
-                var clearinghouse = await _hyperliquidClient.GetClearinghouseStateAsync(_settings.Hyperliquid.WalletAddress, ct);
-                equity = clearinghouse.MarginSummary.AccountValueDecimal;
-                availableMargin = decimal.TryParse(clearinghouse.Withdrawable, out var wd) ? wd : equity;
+        _logger.LogInformation("Portfolio: Equity=${Equity:F2}, AvailableMargin=${Margin:F2}, Position={Pos:F4} (UnrealizedPnL=${Pnl:F2})",
+            portfolio.AccountEquity, portfolio.AvailableMargin, position?.Size ?? 0m, position?.UnrealizedPnl ?? 0m);
 
-                var position = clearinghouse.AssetPositions.FirstOrDefault(p =>
-                    string.Equals(p.Position.Coin, targetAsset, StringComparison.OrdinalIgnoreCase))?.Position;
-
-                if (position != null)
-                {
-                    currentPositionSize = position.SizeDecimal;
-                    entryPrice = position.EntryPriceDecimal;
-                    unrealizedPnl = position.UnrealizedPnlDecimal;
-                }
-
-                _logger.LogInformation("Account State: Equity=${Equity:F2}, AvailableMargin=${Margin:F2}, OpenPos={Pos:F4} (PnL=${Pnl:F2})",
-                    equity, availableMargin, currentPositionSize, unrealizedPnl);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Could not fetch live clearinghouse state. Falling back to configured defaults.");
-            }
-        }
-
-        // 5. Ingest Orderbook Spread
-        decimal bestBid = currentPrice;
-        decimal bestAsk = currentPrice;
-        try
-        {
-            var book = await _hyperliquidClient.GetL2BookAsync(targetAsset, ct);
-            if (book != null && book.Levels.Count >= 2)
-            {
-                var bids = book.Levels[0];
-                var asks = book.Levels[1];
-                if (bids.Count > 0 && decimal.TryParse(bids[0].Px, out var b)) bestBid = b;
-                if (asks.Count > 0 && decimal.TryParse(asks[0].Px, out var a)) bestAsk = a;
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug(ex, "Failed to fetch L2 book. Using last candle price for bid/ask.");
-        }
-
-        // 6. Build Market Context
+        // 4. Build Universal Market Context
         var marketContext = new MarketContext
         {
-            Asset = targetAsset,
-            AssetIndex = assetMeta.Index,
-            CurrentPrice = currentPrice,
-            BestBid = bestBid,
-            BestAsk = bestAsk,
-            AccountEquity = equity,
-            AvailableMargin = availableMargin,
-            CurrentPositionSize = currentPositionSize,
-            CurrentPositionEntryPrice = entryPrice,
-            UnrealizedPnl = unrealizedPnl,
+            Asset = targetSymbol,
+            AssetIndex = 0,
+            CurrentPrice = marketSnapshot.CurrentPrice,
+            BestBid = marketSnapshot.BestBid,
+            BestAsk = marketSnapshot.BestAsk,
+            AccountEquity = portfolio.AccountEquity,
+            AvailableMargin = portfolio.AvailableMargin,
+            CurrentPositionSize = position?.Size ?? 0m,
+            CurrentPositionEntryPrice = position?.EntryPrice ?? 0m,
+            UnrealizedPnl = position?.UnrealizedPnl ?? 0m,
             Indicators = indicators,
-            RecentCandles = candles.TakeLast(10).Select(c => new CandleSummary(
-                c.DateTimeUtc, c.OpenDecimal, c.HighDecimal, c.LowDecimal, c.CloseDecimal, c.VolumeDecimal
-            )).ToList(),
+            RecentCandles = marketSnapshot.Candles.TakeLast(10).ToList(),
             TimestampUtc = DateTime.UtcNow
         };
 
-        // 7. Request LLM Analysis from ResearchEngine
-        _logger.LogInformation("Querying ResearchEngine for quantitative decision...");
+        // 5. Query AI Research Engine
+        _logger.LogInformation("Querying AI Research Engine ({Provider} / {Model})...",
+            _researchEngine.ActiveProvider, _researchEngine.ActiveModel);
         var decision = await _researchEngine.EvaluateMarketAsync(marketContext, ct);
-        _logger.LogInformation("Decision: Action={Action}, Confidence={Confidence:F2}, Reasoning={Reasoning}",
-            decision.Action, decision.Confidence, decision.Reasoning);
+        _logger.LogInformation("Decision: Action={Action}, Confidence={Confidence:F2}, Allocation={Alloc:P1}",
+            decision.Action, decision.Confidence, decision.AllocationPct);
 
-        // 8. Deterministic Risk Evaluation
+        // 6. Deterministic Risk Validation
         var riskResult = _riskManager.Evaluate(decision, marketContext);
-        foreach (var log in riskResult.SafetyAuditLogs)
+        foreach (var audit in riskResult.SafetyAuditLogs)
         {
-            _logger.LogInformation("[RiskAudit] {Log}", log);
+            _logger.LogInformation("[RiskAudit] {Log}", audit);
         }
 
-        // 9. Execute Order If Approved
+        // 7. Dispatch Order If Approved
         if (riskResult.IsApproved && (riskResult.Action == TradeAction.Buy || riskResult.Action == TradeAction.Sell || riskResult.Action == TradeAction.Close))
         {
-            await ExecuteApprovedTradeAsync(riskResult, assetMeta.Index, assetMeta.SzDecimals, ct);
+            await DispatchApprovedOrderAsync(targetSymbol, riskResult, ct);
         }
         else
         {
-            _logger.LogInformation("No order dispatched. Status: Approved={IsApproved}, Reason={Reason}",
+            _logger.LogInformation("Cycle completed with no order dispatched: Approved={Approved}, Reason={Reason}",
                 riskResult.IsApproved, riskResult.RejectionReason ?? "None");
         }
 
-        // 10. Update Heartbeat for VPS Monitoring and Live Dashboard
-        UpdateHeartbeatFile(equity, riskResult);
+        // 8. Update Heartbeat and Dashboard State
+        UpdateHeartbeatFile(portfolio.AccountEquity, riskResult);
         _botStateService.RecordCycle(marketContext, decision, riskResult);
     }
 
-    private async Task ExecuteApprovedTradeAsync(RiskEvaluation risk, int assetIndex, int szDecimals, CancellationToken ct)
+    private async Task DispatchApprovedOrderAsync(string symbol, RiskEvaluation risk, CancellationToken ct)
     {
         if (_settings.Execution.DryRun)
         {
-            _logger.LogWarning("[DRY-RUN] Order simulated: Action={Action}, Size={Size:F6}, Px=${Px:F2}, SL=${SL:F2}, TP=${TP:F2}",
+            _logger.LogWarning("[DRY-RUN] Simulated Order: Action={Action}, Size={Size:F6}, Price=${Px:F2}, SL=${SL:F2}, TP=${TP:F2}",
                 risk.Action, risk.ApprovedSize, risk.EntryPrice, risk.StopLossPrice, risk.TakeProfitPrice);
             return;
         }
 
         var isBuy = risk.Action == TradeAction.Buy || (risk.Action == TradeAction.Close && risk.ApprovedSize < 0);
+        var side = isBuy ? TradeOrderSide.Buy : TradeOrderSide.Sell;
         var reduceOnly = risk.Action == TradeAction.Close;
 
-        try
-        {
-            _logger.LogInformation("Dispatching primary market order: Action={Action}, IsBuy={IsBuy}, Size={Size:F6}, Px=${Px:F2}",
-                risk.Action, isBuy, risk.ApprovedSize, risk.EntryPrice);
+        var orderRequest = new TradeOrderRequest(
+            Symbol: symbol,
+            Side: side,
+            Type: TradeOrderType.Market,
+            Size: risk.ApprovedSize,
+            Price: risk.EntryPrice,
+            StopLossPrice: risk.StopLossPrice,
+            TakeProfitPrice: risk.TakeProfitPrice,
+            ReduceOnly: reduceOnly
+        );
 
-            // 1. Place Primary Order
-            var primaryResponse = await _hyperliquidClient.PostOrderAsync(
-                assetIndex: assetIndex,
-                isBuy: isBuy,
-                price: risk.EntryPrice,
-                size: risk.ApprovedSize,
-                szDecimals: szDecimals,
-                reduceOnly: reduceOnly,
-                tif: _settings.Hyperliquid.DefaultTif,
-                trigger: null,
-                cloid: null,
-                ct: ct
-            );
+        _logger.LogInformation("Dispatching order to {Exchange}: {Side} {Size:F4} {Symbol} @ ${Px:F2}",
+            _exchangeClient.ExchangeName, side, risk.ApprovedSize, symbol, risk.EntryPrice);
 
-            _logger.LogInformation("Primary order executed. Status={Status}", primaryResponse.Status);
-
-            // 2. Place Attached Stop-Loss Trigger Order if configured and not closing
-            if (risk.StopLossPrice.HasValue && risk.Action != TradeAction.Close)
-            {
-                var slIsBuy = !isBuy; // Opposing direction to close
-                var slTrigger = new TriggerOrderTypeWire(
-                    TriggerPx: risk.StopLossPrice.Value.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture),
-                    IsMarket: true,
-                    Tpsl: "sl"
-                );
-
-                _logger.LogInformation("Attaching mandatory Stop-Loss trigger at ${SL:F2}...", risk.StopLossPrice.Value);
-
-                var slResponse = await _hyperliquidClient.PostOrderAsync(
-                    assetIndex: assetIndex,
-                    isBuy: slIsBuy,
-                    price: risk.StopLossPrice.Value,
-                    size: risk.ApprovedSize,
-                    szDecimals: szDecimals,
-                    reduceOnly: true,
-                    tif: "Gtc",
-                    trigger: slTrigger,
-                    cloid: null,
-                    ct: ct
-                );
-
-                _logger.LogInformation("Stop-loss attached. Status={Status}", slResponse.Status);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to execute exchange order");
-        }
+        var result = await _exchangeClient.PlaceOrderAsync(orderRequest, ct);
+        _logger.LogInformation("Order Result: Success={Success}, OrderId={Id}, Status={Status}, ExecPx=${Px:F2}",
+            result.Success, result.OrderId, result.Status, result.ExecutedPrice);
     }
 
-    private void UpdateHeartbeatFile(decimal equity, RiskEvaluation lastRisk)
+    private void UpdateHeartbeatFile(decimal equity, RiskEvaluation riskResult)
     {
         try
         {
-            var path = _settings.Execution.HeartbeatFilePath;
-            if (string.IsNullOrWhiteSpace(path)) return;
+            var hbPath = _settings.Execution.HeartbeatFilePath;
+            if (string.IsNullOrWhiteSpace(hbPath)) return;
 
-            if (OperatingSystem.IsWindows() && (path.StartsWith("/tmp") || path.StartsWith("\\tmp")))
-            {
-                path = Path.Combine(Path.GetTempPath(), "hyperliquid_bot_heartbeat.json");
-            }
-
-            var dir = Path.GetDirectoryName(path);
-            if (!string.IsNullOrWhiteSpace(dir) && !Directory.Exists(dir))
+            var dir = Path.GetDirectoryName(hbPath);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
             {
                 Directory.CreateDirectory(dir);
             }
 
-            var status = new
+            var payload = new
             {
                 timestampUtc = DateTime.UtcNow,
-                equity,
+                exchange = _exchangeClient.ExchangeName,
+                equity = equity,
                 isTradingFrozen = _riskManager.IsTradingFrozen,
                 dailyDrawdownPct = _riskManager.DailyDrawdownPct,
-                lastAction = lastRisk.Action.ToString(),
-                lastApproved = lastRisk.IsApproved,
-                lastRejectionReason = lastRisk.RejectionReason
+                lastAction = riskResult.Action.ToString(),
+                lastApproved = riskResult.IsApproved,
+                lastRejectionReason = riskResult.RejectionReason
             };
 
-            File.WriteAllText(path, JsonSerializer.Serialize(status, new JsonSerializerOptions { WriteIndented = true }));
+            File.WriteAllText(hbPath, JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Could not write heartbeat file");
+            _logger.LogDebug(ex, "Failed to update heartbeat file");
         }
     }
 }

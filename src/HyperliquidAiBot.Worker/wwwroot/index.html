@@ -47,11 +47,12 @@
       </div>
       <div>
         <div class="flex items-center gap-2">
-          <h1 class="font-extrabold text-base tracking-tight text-white">HYPERLIQUID <span class="text-cyan-400">AI BOT</span></h1>
-          <span id="badge-network" class="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase bg-cyan-950/80 text-cyan-400 border border-cyan-800/50">TESTNET</span>
+          <h1 class="font-extrabold text-base tracking-tight text-white">UNIVERSAL <span class="text-cyan-400">QUANT AI BOT</span></h1>
+          <span id="badge-exchange" class="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase bg-purple-950/80 text-purple-300 border border-purple-800/50">PAPER TRADING</span>
+          <span id="badge-network" class="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase bg-cyan-950/80 text-cyan-400 border border-cyan-800/50">LIVE FEEDS</span>
           <span id="badge-mode" class="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase bg-amber-950/80 text-amber-400 border border-amber-800/50">DRY-RUN</span>
         </div>
-        <p class="text-xs text-slate-400 mono">EIP-712 Phantom Agent &bull; <span id="asset-label">BTC-PERP</span></p>
+        <p class="text-xs text-slate-400 mono"><span id="exchange-label">Universal Execution Adapter</span> &bull; <span id="asset-label">BTCUSDT</span></p>
       </div>
     </div>
 
@@ -343,8 +344,16 @@
           : 'px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase bg-emerald-950/80 text-emerald-400 border border-emerald-800/50';
       }
 
+      if (data.activeExchange) {
+        document.getElementById('exchange-label').innerText = data.activeExchange;
+        const exBadge = document.getElementById('badge-exchange');
+        if (exBadge) {
+          exBadge.innerText = data.activeExchange.toUpperCase();
+        }
+      }
+
       if (data.asset) {
-        document.getElementById('asset-label').innerText = data.asset + '-PERP';
+        document.getElementById('asset-label').innerText = data.asset;
         document.getElementById('price-asset').innerText = data.asset;
       }
 

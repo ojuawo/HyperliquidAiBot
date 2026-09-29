@@ -7,6 +7,7 @@ namespace HyperliquidAiBot.Core.Services;
 public interface ITechnicalAnalysisService
 {
     TechnicalIndicatorsSnapshot CalculateIndicators(IReadOnlyList<CandleSnapshot> candles);
+    TechnicalIndicatorsSnapshot CalculateIndicators(IReadOnlyList<CandleSummary> candles);
 }
 
 /// <summary>
@@ -29,7 +30,6 @@ public class TechnicalAnalysisService : ITechnicalAnalysisService
             return new TechnicalIndicatorsSnapshot();
         }
 
-        // Convert Hyperliquid candles into Skender Quote objects, sorted ascending by time
         var quotes = candles
             .OrderBy(c => c.OpenTimeMs)
             .Select(c => new Quote
@@ -43,6 +43,35 @@ public class TechnicalAnalysisService : ITechnicalAnalysisService
             })
             .ToList();
 
+        return CalculateFromQuotes(quotes);
+    }
+
+    public TechnicalIndicatorsSnapshot CalculateIndicators(IReadOnlyList<CandleSummary> candles)
+    {
+        if (candles == null || candles.Count < 20)
+        {
+            _logger.LogWarning("Insufficient candle data ({Count} candles) to compute full TA indicators", candles?.Count ?? 0);
+            return new TechnicalIndicatorsSnapshot();
+        }
+
+        var quotes = candles
+            .OrderBy(c => c.TimestampUtc)
+            .Select(c => new Quote
+            {
+                Date = c.TimestampUtc,
+                Open = c.Open,
+                High = c.High,
+                Low = c.Low,
+                Close = c.Close,
+                Volume = c.Volume
+            })
+            .ToList();
+
+        return CalculateFromQuotes(quotes);
+    }
+
+    private TechnicalIndicatorsSnapshot CalculateFromQuotes(List<Quote> quotes)
+    {
         try
         {
             // 1. RSI (14)
