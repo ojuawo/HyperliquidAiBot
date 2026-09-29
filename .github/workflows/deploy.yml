@@ -35,6 +35,42 @@ jobs:
             --configuration Release \
             --output ./publish
 
+      - name: 🛑 Take IIS Application Offline (Release DLL locks)
+        env:
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+          FTP_SERVER_DIR: ${{ secrets.FTP_SERVER_DIR || '/' }}
+        run: |
+          python3 - << 'EOF'
+          import ftplib, os, sys, time
+          from io import BytesIO
+
+          server = os.environ.get("FTP_SERVER")
+          user = os.environ.get("FTP_USERNAME")
+          pwd = os.environ.get("FTP_PASSWORD")
+          sdir = os.environ.get("FTP_SERVER_DIR", "/").strip() or "/"
+
+          if not server or not user or not pwd:
+              print("FTP secrets not configured; skipping offline step.")
+              sys.exit(0)
+
+          try:
+              ftp = ftplib.FTP(server, user, pwd, timeout=30)
+              print(f"Connected to FTP {server}")
+              if sdir and sdir != "/":
+                  ftp.cwd(sdir)
+              
+              html = b"<!DOCTYPE html><html><head><title>Updating</title></head><body><h2>Deployment in progress. Application will reload momentarily.</h2></body></html>"
+              ftp.storbinary("STOR app_offline.htm", BytesIO(html))
+              print("Uploaded app_offline.htm successfully.")
+              ftp.quit()
+              print("Waiting 8 seconds for IIS process to gracefully exit and release DLL file locks...")
+              time.sleep(8)
+          except Exception as e:
+              print(f"Notice on app_offline: {e}")
+          EOF
+
       - name: 🚀 Deploy via FTP
         uses: SamKirkland/FTP-Deploy-Action@v4.3.5
         with:
@@ -44,3 +80,33 @@ jobs:
           server-dir: ${{ secrets.FTP_SERVER_DIR || '/' }}
           local-dir: ./publish/
           dangerous-clean-slate: false
+
+      - name: 🟢 Bring IIS Application Online
+        if: always()
+        env:
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+          FTP_SERVER_DIR: ${{ secrets.FTP_SERVER_DIR || '/' }}
+        run: |
+          python3 - << 'EOF'
+          import ftplib, os, sys
+
+          server = os.environ.get("FTP_SERVER")
+          user = os.environ.get("FTP_USERNAME")
+          pwd = os.environ.get("FTP_PASSWORD")
+          sdir = os.environ.get("FTP_SERVER_DIR", "/").strip() or "/"
+
+          if not server or not user or not pwd:
+              sys.exit(0)
+
+          try:
+              ftp = ftplib.FTP(server, user, pwd, timeout=30)
+              if sdir and sdir != "/":
+                  ftp.cwd(sdir)
+              ftp.delete("app_offline.htm")
+              print("Removed app_offline.htm. IIS application is reloading.")
+              ftp.quit()
+          except Exception as e:
+              print(f"Notice on bringing online: {e}")
+          EOF
