@@ -1,0 +1,26 @@
+services:
+  hyperliquid-ai-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hyperliquid-ai-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - DOTNET_ENVIRONMENT=Production
+    volumes:
+      - ./data/heartbeat:/tmp
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M

@@ -1,0 +1,30 @@
+## Build and binary output
+[Bb]in/
+[Oo]bj/
+out/
+publish/
+
+## Visual Studio & JetBrains Rider
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## Local Environment and Secrets (CRITICAL FOR PRIVATE KEYS)
+.env
+*.local.json
+secrets.json
+
+## Telemetry, Heartbeats and Logs
+*.log
+*heartbeat*
+data/
+
+## OS specific
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini
+.DS_Store
