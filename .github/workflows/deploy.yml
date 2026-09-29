@@ -30,10 +30,23 @@ jobs:
         run: dotnet test HyperliquidAiBot.sln --configuration Release --no-build --verbosity normal
 
       - name: 📦 Publish Worker Application
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           dotnet publish src/HyperliquidAiBot.Worker/HyperliquidAiBot.Worker.csproj \
             --configuration Release \
             --output ./publish
+
+          if [ -n "$GEMINI_API_KEY" ]; then
+            python3 - << 'PYEOF'
+          import json, os
+          key = os.environ.get("GEMINI_API_KEY")
+          cfg = {"BotSettings": {"Llm": {"Provider": "Gemini", "Model": "gemini-3.5-flash", "ApiKey": key}}}
+          with open("./publish/appsettings.Production.json", "w") as f:
+              json.dump(cfg, f, indent=2)
+          print("Successfully injected GEMINI_API_KEY into appsettings.Production.json")
+          PYEOF
+          fi
 
       - name: 🛑 Take IIS Application Offline (Release DLL locks)
         env:

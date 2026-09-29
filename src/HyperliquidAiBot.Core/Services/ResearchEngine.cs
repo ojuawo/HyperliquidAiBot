@@ -39,7 +39,7 @@ public class ResearchEngine : IResearchEngine
 
         // Resolve active provider and model
         ActiveProvider = !string.IsNullOrWhiteSpace(_settings.Llm.Provider) ? _settings.Llm.Provider : "Gemini";
-        ActiveModel = !string.IsNullOrWhiteSpace(_settings.Llm.Model) ? _settings.Llm.Model : "gemini-2.5-flash";
+        ActiveModel = !string.IsNullOrWhiteSpace(_settings.Llm.Model) ? _settings.Llm.Model : "gemini-3.5-flash";
 
         var timeout = _settings.Llm.TimeoutSeconds > 0 ? _settings.Llm.TimeoutSeconds : 30;
         _httpClient.Timeout = TimeSpan.FromSeconds(timeout);

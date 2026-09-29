@@ -97,7 +97,7 @@ public class LlmSettings
     /// Model name. For Gemini: "gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-pro", "gemini-1.5-flash".
     /// For OpenAI: "gpt-4o", "gpt-4o-mini".
     /// </summary>
-    public string Model { get; set; } = "gemini-2.5-flash";
+    public string Model { get; set; } = "gemini-3.5-flash";
 
     public double Temperature { get; set; } = 0.2;
     public string? BaseUrl { get; set; }

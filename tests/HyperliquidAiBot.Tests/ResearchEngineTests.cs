@@ -124,7 +124,7 @@ public class ResearchEngineTests
             {
                 Provider = "Gemini",
                 ApiKey = "AIzaSyFakeKey123",
-                Model = "gemini-2.5-flash"
+                Model = "gemini-3.5-flash"
             }
         });
 
@@ -136,7 +136,7 @@ public class ResearchEngineTests
         Assert.NotNull(interceptedRequest);
         Assert.True(interceptedRequest.Headers.Contains("x-goog-api-key"));
         Assert.Equal("AIzaSyFakeKey123", interceptedRequest.Headers.GetValues("x-goog-api-key").First());
-        Assert.Contains("/models/gemini-2.5-flash:generateContent", interceptedRequest.RequestUri?.ToString());
+        Assert.Contains("/models/gemini-3.5-flash:generateContent", interceptedRequest.RequestUri?.ToString());
 
         Assert.Equal(TradeAction.Buy, result.Action);
         Assert.Equal(0.85m, result.Confidence);
@@ -178,7 +178,7 @@ public class ResearchEngineTests
             {
                 Provider = "Gemini",
                 ApiKey = "AIzaSyFakeKey123",
-                Model = "gemini-2.5-flash"
+                Model = "gemini-3.5-flash"
             }
         });
 
@@ -206,7 +206,7 @@ public class ResearchEngineTests
             {
                 Provider = "Gemini",
                 ApiKey = "AIzaSyFakeKey123",
-                Model = "gemini-2.5-flash"
+                Model = "gemini-3.5-flash"
             }
         });
 
