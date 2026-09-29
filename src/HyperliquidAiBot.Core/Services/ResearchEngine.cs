@@ -39,7 +39,7 @@ public class ResearchEngine : IResearchEngine
 
         // Resolve active provider and model
         ActiveProvider = !string.IsNullOrWhiteSpace(_settings.Llm.Provider) ? _settings.Llm.Provider : "Gemini";
-        ActiveModel = !string.IsNullOrWhiteSpace(_settings.Llm.Model) ? _settings.Llm.Model : "gemini-3.5-flash";
+        ActiveModel = !string.IsNullOrWhiteSpace(_settings.Llm.Model) ? _settings.Llm.Model : "gemini-3.5-flash-lite";
 
         var timeout = _settings.Llm.TimeoutSeconds > 0 ? _settings.Llm.TimeoutSeconds : 30;
         _httpClient.Timeout = TimeSpan.FromSeconds(timeout);
@@ -90,7 +90,23 @@ You must output strictly conforming JSON matching the provided schema.";
         var baseEndpoint = !string.IsNullOrWhiteSpace(_settings.Llm.BaseUrl)
             ? _settings.Llm.BaseUrl.TrimEnd('/')
             : "https://generativelanguage.googleapis.com/v1beta";
-        var url = $"{baseEndpoint}/models/{ActiveModel}:generateContent";
+
+        var candidateModels = new List<string>();
+        if (!string.IsNullOrWhiteSpace(ActiveModel))
+        {
+            candidateModels.Add(ActiveModel);
+        }
+        var defaultFallbacks = new[] { "gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.5-flash" };
+        foreach (var fallback in defaultFallbacks)
+        {
+            if (!candidateModels.Contains(fallback, StringComparer.OrdinalIgnoreCase))
+            {
+                candidateModels.Add(fallback);
+            }
+        }
+
+        var cleanApiKey = apiKey.Trim().Replace("\r", string.Empty).Replace("\n", string.Empty);
+        var lastError = "No Gemini candidate models configured.";
 
         var requestBody = new
         {
@@ -145,74 +161,79 @@ You must output strictly conforming JSON matching the provided schema.";
             }
         };
 
-        try
+        foreach (var model in candidateModels)
         {
-            var cleanApiKey = apiKey.Trim().Replace("\r", string.Empty).Replace("\n", string.Empty);
-            _logger.LogInformation("Calling Google Gemini ({Model}) with structured schema...", ActiveModel);
-            using var request = new HttpRequestMessage(HttpMethod.Post, url);
-            request.Headers.Add("x-goog-api-key", cleanApiKey);
-            request.Content = JsonContent.Create(requestBody, options: _jsonOptions);
+            var url = $"{baseEndpoint}/models/{model}:generateContent";
 
-            var response = await _httpClient.SendAsync(request, ct);
-            var rawContent = await response.Content.ReadAsStringAsync(ct);
-
-            if (!response.IsSuccessStatusCode)
+            try
             {
-                _logger.LogError("Gemini API call failed ({Status}): {Body}", response.StatusCode, rawContent);
-                return new TradeDecision
+                _logger.LogInformation("Calling Google Gemini ({Model}) with structured schema...", model);
+                using var request = new HttpRequestMessage(HttpMethod.Post, url);
+                request.Headers.Add("x-goog-api-key", cleanApiKey);
+                request.Content = JsonContent.Create(requestBody, options: _jsonOptions);
+
+                var response = await _httpClient.SendAsync(request, ct);
+                var rawContent = await response.Content.ReadAsStringAsync(ct);
+
+                if (!response.IsSuccessStatusCode)
                 {
-                    Action = TradeAction.Hold,
-                    Confidence = 0.0m,
-                    Reasoning = $"Gemini API error ({response.StatusCode}): {rawContent}"
-                };
+                    _logger.LogWarning("Gemini API model {Model} failed ({Status}): {Body}. Attempting fallback...",
+                        model, response.StatusCode, rawContent);
+                    lastError = $"Gemini API error ({response.StatusCode}) on {model}: {rawContent}";
+                    continue;
+                }
+
+                var jsonDoc = JsonDocument.Parse(rawContent);
+                var text = jsonDoc.RootElement
+                    .GetProperty("candidates")[0]
+                    .GetProperty("content")
+                    .GetProperty("parts")[0]
+                    .GetProperty("text")
+                    .GetString();
+
+                if (string.IsNullOrWhiteSpace(text))
+                {
+                    _logger.LogWarning("Gemini model {Model} returned empty candidate text.", model);
+                    lastError = $"Gemini model {model} returned empty text.";
+                    continue;
+                }
+
+                var cleanedText = text.Trim();
+                if (cleanedText.StartsWith("```json", StringComparison.OrdinalIgnoreCase))
+                {
+                    cleanedText = cleanedText.Substring(7);
+                }
+                else if (cleanedText.StartsWith("```", StringComparison.OrdinalIgnoreCase))
+                {
+                    cleanedText = cleanedText.Substring(3);
+                }
+
+                if (cleanedText.EndsWith("```", StringComparison.OrdinalIgnoreCase))
+                {
+                    cleanedText = cleanedText.Substring(0, cleanedText.Length - 3);
+                }
+                cleanedText = cleanedText.Trim();
+
+                var decision = JsonSerializer.Deserialize<TradeDecision>(cleanedText, _jsonOptions);
+                _logger.LogInformation("Gemini ({Model}) Decision: Action={Action}, Confidence={Confidence:F2}, Allocation={Alloc:P1}",
+                    model, decision?.Action, decision?.Confidence, decision?.AllocationPct);
+
+                return decision ?? new TradeDecision { Action = TradeAction.Hold, Confidence = 0.0m, Reasoning = "Deserialization failed" };
             }
-
-            var jsonDoc = JsonDocument.Parse(rawContent);
-            var text = jsonDoc.RootElement
-                .GetProperty("candidates")[0]
-                .GetProperty("content")
-                .GetProperty("parts")[0]
-                .GetProperty("text")
-                .GetString();
-
-            if (string.IsNullOrWhiteSpace(text))
+            catch (Exception ex)
             {
-                _logger.LogWarning("Gemini returned empty candidate text.");
-                return new TradeDecision { Action = TradeAction.Hold, Confidence = 0.0m, Reasoning = "Empty Gemini response" };
+                _logger.LogWarning(ex, "Exception calling Google Gemini API with model {Model}", model);
+                lastError = $"Gemini Exception ({model}): {ex.Message}";
             }
-
-            var cleanedText = text.Trim();
-            if (cleanedText.StartsWith("```json", StringComparison.OrdinalIgnoreCase))
-            {
-                cleanedText = cleanedText.Substring(7);
-            }
-            else if (cleanedText.StartsWith("```", StringComparison.OrdinalIgnoreCase))
-            {
-                cleanedText = cleanedText.Substring(3);
-            }
-
-            if (cleanedText.EndsWith("```", StringComparison.OrdinalIgnoreCase))
-            {
-                cleanedText = cleanedText.Substring(0, cleanedText.Length - 3);
-            }
-            cleanedText = cleanedText.Trim();
-
-            var decision = JsonSerializer.Deserialize<TradeDecision>(cleanedText, _jsonOptions);
-            _logger.LogInformation("Gemini Decision: Action={Action}, Confidence={Confidence:F2}, Allocation={Alloc:P1}",
-                decision?.Action, decision?.Confidence, decision?.AllocationPct);
-
-            return decision ?? new TradeDecision { Action = TradeAction.Hold, Confidence = 0.0m, Reasoning = "Deserialization failed" };
         }
-        catch (Exception ex)
+
+        _logger.LogError("All Gemini candidate models failed. Last error: {LastError}", lastError);
+        return new TradeDecision
         {
-            _logger.LogError(ex, "Exception calling Google Gemini API");
-            return new TradeDecision
-            {
-                Action = TradeAction.Hold,
-                Confidence = 0.0m,
-                Reasoning = $"Gemini Exception: {ex.Message}"
-            };
-        }
+            Action = TradeAction.Hold,
+            Confidence = 0.0m,
+            Reasoning = lastError
+        };
     }
 
     private async Task<TradeDecision> EvaluateWithOpenAiAsync(string apiKey, string systemPrompt, string userPrompt, CancellationToken ct)

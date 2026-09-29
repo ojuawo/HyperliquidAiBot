@@ -41,7 +41,7 @@ jobs:
             python3 - << 'PYEOF'
           import json, os
           key = os.environ.get("GEMINI_API_KEY", "").strip()
-          cfg = {"BotSettings": {"Llm": {"Provider": "Gemini", "Model": "gemini-3.5-flash", "ApiKey": key}}}
+          cfg = {"BotSettings": {"Llm": {"Provider": "Gemini", "Model": "gemini-3.5-flash-lite", "ApiKey": key}}}
           with open("./publish/appsettings.Production.json", "w") as f:
               json.dump(cfg, f, indent=2)
           print("Successfully injected GEMINI_API_KEY into appsettings.Production.json")

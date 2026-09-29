@@ -124,7 +124,7 @@ public class ResearchEngineTests
             {
                 Provider = "Gemini",
                 ApiKey = "AIzaSyFakeKey123",
-                Model = "gemini-3.5-flash"
+                Model = "gemini-3.5-flash-lite"
             }
         });
 
@@ -136,7 +136,7 @@ public class ResearchEngineTests
         Assert.NotNull(interceptedRequest);
         Assert.True(interceptedRequest.Headers.Contains("x-goog-api-key"));
         Assert.Equal("AIzaSyFakeKey123", interceptedRequest.Headers.GetValues("x-goog-api-key").First());
-        Assert.Contains("/models/gemini-3.5-flash:generateContent", interceptedRequest.RequestUri?.ToString());
+        Assert.Contains("/models/gemini-3.5-flash-lite:generateContent", interceptedRequest.RequestUri?.ToString());
 
         Assert.Equal(TradeAction.Buy, result.Action);
         Assert.Equal(0.85m, result.Confidence);
@@ -144,6 +144,82 @@ public class ResearchEngineTests
         Assert.Equal(0.025m, result.SuggestedStopLossPct);
         Assert.Equal(0.05m, result.SuggestedTakeProfitPct);
         Assert.Equal(2, result.KeyIndicatorsCited.Count);
+    }
+
+    [Fact]
+    public async Task EvaluateMarketAsync_GeminiPrimaryFails_FallsBackToAlternativeModelAndSucceeds()
+    {
+        var expectedDecisionJson = """
+        {
+            "action": "Buy",
+            "confidence": 0.90,
+            "allocationPct": 0.02,
+            "suggestedStopLossPct": 0.02,
+            "suggestedTakeProfitPct": 0.05,
+            "reasoning": "Fallback model caught breakout.",
+            "keyIndicatorsCited": ["RSI"]
+        }
+        """;
+
+        var geminiEnvelope = $$"""
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "text": {{JsonSerializer.Serialize(expectedDecisionJson)}}
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+        """;
+
+        var callCount = 0;
+        var requestedUris = new List<string>();
+        var mockHandler = new MockHttpMessageHandler(req =>
+        {
+            callCount++;
+            requestedUris.Add(req.RequestUri?.ToString() ?? string.Empty);
+
+            if (callCount == 1)
+            {
+                // Primary model returns 503 Service Unavailable
+                return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                {
+                    Content = new StringContent("{\"error\":{\"code\":503,\"message\":\"High demand\"}}")
+                };
+            }
+
+            // Fallback model returns 200 OK
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(geminiEnvelope, System.Text.Encoding.UTF8, "application/json")
+            };
+        });
+
+        var settings = Options.Create(new BotSettings
+        {
+            Llm = new LlmSettings
+            {
+                Provider = "Gemini",
+                ApiKey = "AIzaSyFakeKey123",
+                Model = "gemini-3.5-flash"
+            }
+        });
+
+        var client = new HttpClient(mockHandler);
+        var engine = new ResearchEngine(client, settings, NullLogger<ResearchEngine>.Instance);
+
+        var result = await engine.EvaluateMarketAsync(CreateSampleContext());
+
+        Assert.Equal(2, callCount);
+        Assert.Contains("/models/gemini-3.5-flash:generateContent", requestedUris[0]);
+        Assert.Contains("/models/gemini-3.5-flash-lite:generateContent", requestedUris[1]);
+        Assert.Equal(TradeAction.Buy, result.Action);
+        Assert.Equal(0.90m, result.Confidence);
     }
 
     [Fact]
