@@ -42,7 +42,7 @@ public class ExchangeSettings
     /// <summary>
     /// Frequency of trading worker evaluation loop in seconds.
     /// </summary>
-    public int PollIntervalSeconds { get; set; } = 60;
+    public int PollIntervalSeconds { get; set; } = 90;
 }
 
 public class BinanceSettings
