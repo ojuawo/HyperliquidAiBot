@@ -129,7 +129,29 @@ dotnet run --project src/HyperliquidAiBot.Worker/HyperliquidAiBot.Worker.csproj
 
 ---
 
-### Option 2: Native Systemd Service (Ubuntu/Debian)
+### Option 2: Automated Hosting / FTP Deployment via GitHub Actions
+
+The repository includes a GitHub Actions workflow (`.github/workflows/deploy.yml`) that automatically builds, tests, publishes with `web.config` for IIS, and deploys via FTP directly to your hosting server whenever changes are pushed to `main`.
+
+1. **Configure GitHub Repository Secrets**:
+   Go to **Settings** > **Secrets and variables** > **Actions** in your GitHub repository and add:
+   - `FTP_SERVER`: Your FTP host (e.g., `ftp.yourhost.com`).
+   - `FTP_USERNAME`: Your FTP account username.
+   - `FTP_PASSWORD`: Your FTP account password.
+   - *(Optional)* `FTP_SERVER_DIR`: Destination folder (defaults to `/`).
+
+2. **Trigger Deployment**:
+   - Push to `main` or trigger manually from the **Actions** tab in GitHub.
+   - The workflow compiles the solution, executes all unit tests, publishes the release package with `web.config` and the dashboard UI, and synchronizes to your FTP destination.
+
+3. **Verify Live Application & Visual Dashboard**:
+   - Visual Terminal & Dashboard: `https://<your-domain>/`
+   - API Status endpoint: `https://<your-domain>/api/status`
+   - Healthcheck endpoint: `https://<your-domain>/health`
+
+---
+
+### Option 3: Native Systemd Service (Ubuntu/Debian)
 
 Because `Program.cs` includes `.UseSystemd()`, the bot operates natively as a system daemon.
 

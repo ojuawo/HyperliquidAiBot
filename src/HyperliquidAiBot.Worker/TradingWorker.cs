@@ -18,6 +18,7 @@ public class TradingWorker : BackgroundService
     private readonly ITechnicalAnalysisService _taService;
     private readonly IResearchEngine _researchEngine;
     private readonly IRiskManager _riskManager;
+    private readonly IBotStateService _botStateService;
     private readonly BotSettings _settings;
     private readonly ILogger<TradingWorker> _logger;
 
@@ -28,6 +29,7 @@ public class TradingWorker : BackgroundService
         ITechnicalAnalysisService taService,
         IResearchEngine researchEngine,
         IRiskManager riskManager,
+        IBotStateService botStateService,
         IOptions<BotSettings> settings,
         ILogger<TradingWorker> logger)
     {
@@ -35,6 +37,7 @@ public class TradingWorker : BackgroundService
         _taService = taService;
         _researchEngine = researchEngine;
         _riskManager = riskManager;
+        _botStateService = botStateService;
         _settings = settings.Value;
         _logger = logger;
     }
@@ -50,12 +53,8 @@ public class TradingWorker : BackgroundService
         await InitializeUniverseMetadataAsync(stoppingToken);
 
         var intervalSeconds = Math.Max(10, _settings.Hyperliquid.PollIntervalSeconds);
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(intervalSeconds));
 
-        // Initial cycle immediately
-        await ExecuteTradingCycleAsync(stoppingToken);
-
-        while (!stoppingToken.IsCancellationRequested && await timer.WaitForNextTickAsync(stoppingToken))
+        while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
@@ -69,6 +68,8 @@ public class TradingWorker : BackgroundService
             {
                 _logger.LogError(ex, "Unhandled exception in trading execution loop");
             }
+
+            await _botStateService.WaitAsync(TimeSpan.FromSeconds(intervalSeconds), stoppingToken);
         }
 
         _logger.LogInformation("Trading worker background execution stopped gracefully.");
@@ -244,8 +245,9 @@ public class TradingWorker : BackgroundService
                 riskResult.IsApproved, riskResult.RejectionReason ?? "None");
         }
 
-        // 10. Update Heartbeat for VPS Monitoring
+        // 10. Update Heartbeat for VPS Monitoring and Live Dashboard
         UpdateHeartbeatFile(equity, riskResult);
+        _botStateService.RecordCycle(marketContext, decision, riskResult);
     }
 
     private async Task ExecuteApprovedTradeAsync(RiskEvaluation risk, int assetIndex, int szDecimals, CancellationToken ct)

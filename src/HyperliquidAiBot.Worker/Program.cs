@@ -1,63 +1,82 @@
 using HyperliquidAiBot.Core.Config;
 using HyperliquidAiBot.Core.Services;
 using HyperliquidAiBot.Worker;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
-var host = Host.CreateDefaultBuilder(args)
-    .UseSystemd() // Native Linux Systemd service support
-    .ConfigureAppConfiguration((hostingContext, config) =>
+var builder = WebApplication.CreateBuilder(args);
+
+// Enable systemd support when running on Linux systems
+if (OperatingSystem.IsLinux())
+{
+    builder.Host.UseSystemd();
+}
+
+// Bind BotSettings from appsettings.json and environment variables
+builder.Services.Configure<BotSettings>(builder.Configuration.GetSection(BotSettings.SectionName));
+var botSettings = builder.Configuration.GetSection(BotSettings.SectionName).Get<BotSettings>() ?? new BotSettings();
+
+// Register In-Memory State Repository for Visual Dashboard
+builder.Services.AddSingleton<IBotStateService, BotStateService>();
+
+// Register EIP-712 Signer
+builder.Services.AddSingleton<IHyperliquidSigner>(sp =>
+{
+    var pk = botSettings.Hyperliquid.PrivateKey;
+    if (string.IsNullOrWhiteSpace(pk))
     {
-        config.AddJsonFile("appsettings.json", optional: false, reloadOnChange: true);
-        config.AddJsonFile($"appsettings.{hostingContext.HostingEnvironment.EnvironmentName}.json", optional: true, reloadOnChange: true);
-        config.AddEnvironmentVariables();
-    })
-    .ConfigureServices((hostContext, services) =>
-    {
-        var configuration = hostContext.Configuration;
+        // Ephemeral fallback key for initial startup before live keys are injected
+        pk = "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    }
+    return new HyperliquidSigner(pk);
+});
 
-        // Bind Options
-        services.Configure<BotSettings>(configuration.GetSection(BotSettings.SectionName));
-        var botSettings = configuration.GetSection(BotSettings.SectionName).Get<BotSettings>() ?? new BotSettings();
+// Register HttpClients with resilient timeout settings
+builder.Services.AddHttpClient<IHyperliquidClient, HyperliquidClient>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(20);
+});
 
-        // Register EIP-712 Signer
-        services.AddSingleton<IHyperliquidSigner>(sp =>
-        {
-            var pk = botSettings.Hyperliquid.PrivateKey;
-            if (string.IsNullOrWhiteSpace(pk))
-            {
-                // Fallback ephemeral key for test/dry-run startup if not yet set in environment
-                pk = "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-            }
-            return new HyperliquidSigner(pk);
-        });
+builder.Services.AddHttpClient<IResearchEngine, ResearchEngine>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(botSettings.OpenAi.TimeoutSeconds > 0 ? botSettings.OpenAi.TimeoutSeconds : 30);
+});
 
-        // Register HttpClients
-        services.AddHttpClient<IHyperliquidClient, HyperliquidClient>(client =>
-        {
-            client.Timeout = TimeSpan.FromSeconds(20);
-        });
+// Register Core Domain Services
+builder.Services.AddSingleton<ITechnicalAnalysisService, TechnicalAnalysisService>();
+builder.Services.AddSingleton<IRiskManager, RiskManager>();
 
-        services.AddHttpClient<IResearchEngine, ResearchEngine>(client =>
-        {
-            client.Timeout = TimeSpan.FromSeconds(botSettings.OpenAi.TimeoutSeconds > 0 ? botSettings.OpenAi.TimeoutSeconds : 30);
-        });
+// Register Continuous Background Trading Worker
+builder.Services.AddHostedService<TradingWorker>();
 
-        // Register Core Domain Services
-        services.AddSingleton<ITechnicalAnalysisService, TechnicalAnalysisService>();
-        services.AddSingleton<IRiskManager, RiskManager>();
+var app = builder.Build();
 
-        // Register Background Worker
-        services.AddHostedService<TradingWorker>();
-    })
-    .ConfigureLogging((hostContext, logging) =>
-    {
-        logging.ClearProviders();
-        logging.AddConsole();
-        logging.SetMinimumLevel(LogLevel.Information);
-    })
-    .Build();
+// Enable static files to serve the visual dashboard (/wwwroot/index.html)
+app.UseDefaultFiles();
+app.UseStaticFiles();
 
-await host.RunAsync();
+// Visual Dashboard API Endpoints
+app.MapGet("/api/status", (IBotStateService state, IRiskManager risk) =>
+{
+    return Results.Json(state.GetSnapshot(risk.IsTradingFrozen, risk.DailyDrawdownPct));
+});
+
+app.MapPost("/api/trigger", (IBotStateService state) =>
+{
+    state.RequestImmediateCycle();
+    return Results.Ok(new { message = "Evaluation cycle triggered", timestampUtc = DateTime.UtcNow });
+});
+
+// Health check endpoint for IIS / uptime monitors
+app.MapGet("/health", () => Results.Ok(new
+{
+    status = "healthy",
+    utc = DateTime.UtcNow
+}));
+
+await app.RunAsync();

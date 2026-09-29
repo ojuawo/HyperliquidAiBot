@@ -1,0 +1,46 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    name: Build, Test, and FTP Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: ⚙️ Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: 📦 Restore dependencies
+        run: dotnet restore HyperliquidAiBot.sln
+
+      - name: 🔨 Build Solution
+        run: dotnet build HyperliquidAiBot.sln --configuration Release --no-restore
+
+      - name: 🧪 Run Unit Tests
+        run: dotnet test HyperliquidAiBot.sln --configuration Release --no-build --verbosity normal
+
+      - name: 📦 Publish Worker Application
+        run: |
+          dotnet publish src/HyperliquidAiBot.Worker/HyperliquidAiBot.Worker.csproj \
+            --configuration Release \
+            --output ./publish
+
+      - name: 🚀 Deploy via FTP
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          server-dir: ${{ secrets.FTP_SERVER_DIR || '/' }}
+          local-dir: ./publish/
+          dangerous-clean-slate: false
