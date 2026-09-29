@@ -23,8 +23,8 @@ public class ExchangeClientTests
         var client = new HttpClient();
         var paperClient = new PaperTradingExchangeClient(
             client,
-            NullLogger<PaperTradingExchangeClient>.Instance,
-            startingBalance: 10000m
+            Options.Create(new BotSettings()),
+            NullLogger<PaperTradingExchangeClient>.Instance
         );
 
         // 1. Initial State

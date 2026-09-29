@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Net.Http.Json;
 using System.Text.Json;
 using HyperliquidAiBot.Core.Models;
 using Microsoft.Extensions.Logging;
@@ -24,11 +25,12 @@ public class PaperTradingExchangeClient : IExchangeClient
 
     public PaperTradingExchangeClient(
         HttpClient httpClient,
-        ILogger<PaperTradingExchangeClient> logger,
-        decimal startingBalance = 10000m)
+        Microsoft.Extensions.Options.IOptions<HyperliquidAiBot.Core.Config.BotSettings> settings,
+        ILogger<PaperTradingExchangeClient> logger)
     {
         _httpClient = httpClient;
         _logger = logger;
+        var startingBalance = settings.Value.PaperTrading.StartingBalanceUsd;
         _accountBalance = startingBalance > 0 ? startingBalance : 10000m;
         _httpClient.Timeout = TimeSpan.FromSeconds(15);
     }
@@ -119,6 +121,58 @@ public class PaperTradingExchangeClient : IExchangeClient
         catch (Exception ex)
         {
             _logger.LogWarning("Failed to fetch public klines for {Symbol}: {Message}", normSymbol, ex.Message);
+        }
+
+        // 3. Fallback to Hyperliquid Public Feed if primary exchange returned 0 candles (e.g. US geo-blocking)
+        if (candles.Count == 0)
+        {
+            try
+            {
+                var coin = symbol.Replace("USDT", string.Empty, StringComparison.OrdinalIgnoreCase).Replace("-PERP", string.Empty, StringComparison.OrdinalIgnoreCase);
+                if (string.IsNullOrWhiteSpace(coin)) coin = "BTC";
+
+                var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                var startTime = nowMs - (Math.Max(20, limit) * 3600 * 1000L);
+
+                var hlPayload = new
+                {
+                    type = "candleSnapshot",
+                    req = new { coin = coin, interval = normInterval, startTime = startTime }
+                };
+
+                using var hlResp = await _httpClient.PostAsJsonAsync("https://api.hyperliquid.xyz/info", hlPayload, ct);
+                if (hlResp.IsSuccessStatusCode)
+                {
+                    var hlJson = await hlResp.Content.ReadAsStringAsync(ct);
+                    using var hlDoc = JsonDocument.Parse(hlJson);
+                    foreach (var c in hlDoc.RootElement.EnumerateArray())
+                    {
+                        var t = c.GetProperty("t").GetInt64();
+                        var o = decimal.Parse(c.GetProperty("o").GetString()!, CultureInfo.InvariantCulture);
+                        var h = decimal.Parse(c.GetProperty("h").GetString()!, CultureInfo.InvariantCulture);
+                        var l = decimal.Parse(c.GetProperty("l").GetString()!, CultureInfo.InvariantCulture);
+                        var cl = decimal.Parse(c.GetProperty("c").GetString()!, CultureInfo.InvariantCulture);
+                        var v = decimal.Parse(c.GetProperty("v").GetString()!, CultureInfo.InvariantCulture);
+
+                        candles.Add(new CandleSummary(
+                            DateTimeOffset.FromUnixTimeMilliseconds(t).UtcDateTime,
+                            o, h, l, cl, v
+                        ));
+                    }
+
+                    if (candles.Count > 0)
+                    {
+                        currentPrice = candles.Last().Close;
+                        bestBid = currentPrice * 0.9999m;
+                        bestAsk = currentPrice * 1.0001m;
+                        _logger.LogInformation("Ingested {Count} live candles for {Symbol} via Hyperliquid public feed.", candles.Count, coin);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning("Fallback public candle feed failed: {Msg}", ex.Message);
+            }
         }
 
         if (currentPrice > 0)
