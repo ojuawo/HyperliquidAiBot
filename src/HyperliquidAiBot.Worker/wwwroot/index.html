@@ -183,7 +183,7 @@
         </div>
 
         <div class="mt-6 pt-4 border-t border-brand-border flex items-center justify-between text-xs text-slate-500">
-          <span>Model: <span class="text-slate-300 mono" id="model-name">gpt-4o</span></span>
+          <span>Model: <span class="text-slate-300 mono" id="model-name">Google Gemini (gemini-2.5-flash)</span></span>
           <span>Response Format: <span class="text-cyan-400 mono">Strict JSON Schema</span></span>
         </div>
       </div>
@@ -320,6 +320,33 @@
 
     function renderDashboard(data) {
       document.getElementById('last-update').innerText = new Date().toLocaleTimeString();
+
+      // Dynamic System & Model Metadata
+      if (data.activeModel) {
+        const prov = data.activeProvider ? (data.activeProvider + ' / ') : '';
+        document.getElementById('model-name').innerText = prov + data.activeModel;
+      }
+
+      if (data.useTestnet !== undefined) {
+        const netBadge = document.getElementById('badge-network');
+        netBadge.innerText = data.useTestnet ? 'TESTNET' : 'MAINNET';
+        netBadge.className = data.useTestnet
+          ? 'px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase bg-cyan-950/80 text-cyan-400 border border-cyan-800/50'
+          : 'px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase bg-emerald-950/80 text-emerald-400 border border-emerald-800/50';
+      }
+
+      if (data.dryRun !== undefined) {
+        const modeBadge = document.getElementById('badge-mode');
+        modeBadge.innerText = data.dryRun ? 'DRY-RUN' : 'LIVE TRADING';
+        modeBadge.className = data.dryRun
+          ? 'px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase bg-amber-950/80 text-amber-400 border border-amber-800/50'
+          : 'px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase bg-emerald-950/80 text-emerald-400 border border-emerald-800/50';
+      }
+
+      if (data.asset) {
+        document.getElementById('asset-label').innerText = data.asset + '-PERP';
+        document.getElementById('price-asset').innerText = data.asset;
+      }
 
       // Badges
       const ctx = data.latestContext;

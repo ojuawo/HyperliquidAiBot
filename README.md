@@ -18,7 +18,7 @@ HyperliquidAiBot/
 │   │   │   ├── HyperliquidSigner.cs    # EIP-712 Phantom Agent signer (Nethereum)
 │   │   │   ├── HyperliquidClient.cs    # REST & WebSocket client (/info, /exchange)
 │   │   │   ├── TechnicalAnalysisService.cs # Skender.Stock.Indicators TA engine
-│   │   │   ├── ResearchEngine.cs       # OpenAI Structured Outputs (JSON Schema)
+│   │   │   ├── ResearchEngine.cs       # Google Gemini & OpenAI Quantitative Engine (JSON Schema)
 │   │   │   └── RiskManager.cs          # Deterministic safety guardrail engine
 │   │   └── Config/
 │   │       ├── BotSettings.cs          # Options pattern configuration
@@ -108,7 +108,9 @@ dotnet run --project src/HyperliquidAiBot.Worker/HyperliquidAiBot.Worker.csproj
    - `BOTSETTINGS__HYPERLIQUID__USETESTNET=false` (when deploying to Mainnet)
    - `BOTSETTINGS__HYPERLIQUID__PRIVATEKEY=0x...`
    - `BOTSETTINGS__HYPERLIQUID__WALLETADDRESS=0x...`
-   - `BOTSETTINGS__OPENAI__APIKEY=sk-...`
+   - `BOTSETTINGS__LLM__PROVIDER=Gemini`
+   - `BOTSETTINGS__LLM__APIKEY=AIzaSy...` (from Google AI Studio)
+   - `BOTSETTINGS__LLM__MODEL=gemini-2.5-flash`
    - `BOTSETTINGS__EXECUTION__DRYRUN=false` (for live orders)
 
 3. **Launch Container with Log Rotation**:

@@ -1,7 +1,6 @@
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using HyperliquidAiBot.Core.Config;
 using HyperliquidAiBot.Core.Models;
 using Microsoft.Extensions.Logging;
@@ -12,17 +11,22 @@ namespace HyperliquidAiBot.Core.Services;
 public interface IResearchEngine
 {
     Task<TradeDecision> EvaluateMarketAsync(MarketContext context, CancellationToken ct = default);
+    string ActiveModel { get; }
+    string ActiveProvider { get; }
 }
 
 /// <summary>
-/// OpenAI-powered quantitative research engine using Structured Outputs (JSON Schema).
+/// Quantitative research engine supporting Google Gemini (native structured JSON) and OpenAI.
 /// </summary>
 public class ResearchEngine : IResearchEngine
 {
     private readonly HttpClient _httpClient;
-    private readonly OpenAiSettings _settings;
+    private readonly BotSettings _settings;
     private readonly ILogger<ResearchEngine> _logger;
     private readonly JsonSerializerOptions _jsonOptions;
+
+    public string ActiveProvider { get; }
+    public string ActiveModel { get; }
 
     public ResearchEngine(
         HttpClient httpClient,
@@ -30,46 +34,196 @@ public class ResearchEngine : IResearchEngine
         ILogger<ResearchEngine> logger)
     {
         _httpClient = httpClient;
-        _settings = settings.Value.OpenAi;
+        _settings = settings.Value;
         _logger = logger;
 
-        if (!string.IsNullOrWhiteSpace(_settings.BaseUrl))
-        {
-            _httpClient.BaseAddress = new Uri(_settings.BaseUrl);
-        }
-        _httpClient.Timeout = TimeSpan.FromSeconds(_settings.TimeoutSeconds > 0 ? _settings.TimeoutSeconds : 30);
+        // Resolve active provider and model
+        ActiveProvider = !string.IsNullOrWhiteSpace(_settings.Llm.Provider) ? _settings.Llm.Provider : "Gemini";
+        ActiveModel = !string.IsNullOrWhiteSpace(_settings.Llm.Model) ? _settings.Llm.Model : "gemini-2.5-flash";
+
+        var timeout = _settings.Llm.TimeoutSeconds > 0 ? _settings.Llm.TimeoutSeconds : 30;
+        _httpClient.Timeout = TimeSpan.FromSeconds(timeout);
 
         _jsonOptions = new JsonSerializerOptions
         {
             PropertyNameCaseInsensitive = true,
-            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+            NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
         };
+        _jsonOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
     }
 
     public async Task<TradeDecision> EvaluateMarketAsync(MarketContext context, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(_settings.ApiKey))
+        var apiKey = !string.IsNullOrWhiteSpace(_settings.Llm.ApiKey)
+            ? _settings.Llm.ApiKey
+            : _settings.OpenAi.ApiKey;
+
+        if (string.IsNullOrWhiteSpace(apiKey))
         {
-            _logger.LogWarning("OpenAI API key not configured. Defaulting to HOLD decision.");
+            _logger.LogWarning("{Provider} API key not configured. Defaulting to HOLD decision.", ActiveProvider);
             return new TradeDecision
             {
                 Action = TradeAction.Hold,
                 Confidence = 0.0m,
-                Reasoning = "OpenAI API key not configured."
+                Reasoning = $"{ActiveProvider} API key not configured. (Set BOTSETTINGS__LLM__APIKEY in environment or appsettings.json)"
             };
         }
 
         var systemPrompt = @"You are a Principal Quantitative Risk Analyst and Algorithmic Trading Strategist.
-Your goal is to evaluate the technical indicators, current market structure, price momentum, and account exposure for the given cryptocurrency perpetual contract.
+Your goal is to evaluate technical indicators, current market structure, price momentum, and account exposure for the given cryptocurrency perpetual contract.
 Make disciplined, high-probability trading decisions. Preserve capital as the top priority.
 You must output strictly conforming JSON matching the provided schema.";
 
         var userPrompt = BuildAnalysisPrompt(context);
 
+        if (ActiveProvider.Equals("Gemini", StringComparison.OrdinalIgnoreCase))
+        {
+            return await EvaluateWithGeminiAsync(apiKey, systemPrompt, userPrompt, ct);
+        }
+
+        return await EvaluateWithOpenAiAsync(apiKey, systemPrompt, userPrompt, ct);
+    }
+
+    private async Task<TradeDecision> EvaluateWithGeminiAsync(string apiKey, string systemPrompt, string userPrompt, CancellationToken ct)
+    {
+        var baseEndpoint = !string.IsNullOrWhiteSpace(_settings.Llm.BaseUrl)
+            ? _settings.Llm.BaseUrl.TrimEnd('/')
+            : "https://generativelanguage.googleapis.com/v1beta";
+        var url = $"{baseEndpoint}/models/{ActiveModel}:generateContent";
+
         var requestBody = new
         {
-            model = _settings.Model,
-            temperature = _settings.Temperature,
+            system_instruction = new
+            {
+                parts = new[] { new { text = systemPrompt } }
+            },
+            contents = new[]
+            {
+                new
+                {
+                    role = "user",
+                    parts = new[] { new { text = userPrompt } }
+                }
+            },
+            generationConfig = new
+            {
+                temperature = _settings.Llm.Temperature,
+                responseMimeType = "application/json",
+                responseSchema = new
+                {
+                    type = "OBJECT",
+                    properties = new
+                    {
+                        action = new
+                        {
+                            type = "STRING",
+                            @enum = new[] { "Hold", "Buy", "Sell", "Close" }
+                        },
+                        confidence = new { type = "NUMBER" },
+                        allocationPct = new { type = "NUMBER" },
+                        suggestedStopLossPct = new { type = "NUMBER" },
+                        suggestedTakeProfitPct = new { type = "NUMBER" },
+                        reasoning = new { type = "STRING" },
+                        keyIndicatorsCited = new
+                        {
+                            type = "ARRAY",
+                            items = new { type = "STRING" }
+                        }
+                    },
+                    required = new[]
+                    {
+                        "action",
+                        "confidence",
+                        "allocationPct",
+                        "suggestedStopLossPct",
+                        "suggestedTakeProfitPct",
+                        "reasoning",
+                        "keyIndicatorsCited"
+                    }
+                }
+            }
+        };
+
+        try
+        {
+            _logger.LogInformation("Calling Google Gemini ({Model}) with structured schema...", ActiveModel);
+            using var request = new HttpRequestMessage(HttpMethod.Post, url);
+            request.Headers.Add("x-goog-api-key", apiKey);
+            request.Content = JsonContent.Create(requestBody, options: _jsonOptions);
+
+            var response = await _httpClient.SendAsync(request, ct);
+            var rawContent = await response.Content.ReadAsStringAsync(ct);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogError("Gemini API call failed ({Status}): {Body}", response.StatusCode, rawContent);
+                return new TradeDecision
+                {
+                    Action = TradeAction.Hold,
+                    Confidence = 0.0m,
+                    Reasoning = $"Gemini API error ({response.StatusCode}): {rawContent}"
+                };
+            }
+
+            var jsonDoc = JsonDocument.Parse(rawContent);
+            var text = jsonDoc.RootElement
+                .GetProperty("candidates")[0]
+                .GetProperty("content")
+                .GetProperty("parts")[0]
+                .GetProperty("text")
+                .GetString();
+
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                _logger.LogWarning("Gemini returned empty candidate text.");
+                return new TradeDecision { Action = TradeAction.Hold, Confidence = 0.0m, Reasoning = "Empty Gemini response" };
+            }
+
+            var cleanedText = text.Trim();
+            if (cleanedText.StartsWith("```json", StringComparison.OrdinalIgnoreCase))
+            {
+                cleanedText = cleanedText.Substring(7);
+            }
+            else if (cleanedText.StartsWith("```", StringComparison.OrdinalIgnoreCase))
+            {
+                cleanedText = cleanedText.Substring(3);
+            }
+
+            if (cleanedText.EndsWith("```", StringComparison.OrdinalIgnoreCase))
+            {
+                cleanedText = cleanedText.Substring(0, cleanedText.Length - 3);
+            }
+            cleanedText = cleanedText.Trim();
+
+            var decision = JsonSerializer.Deserialize<TradeDecision>(cleanedText, _jsonOptions);
+            _logger.LogInformation("Gemini Decision: Action={Action}, Confidence={Confidence:F2}, Allocation={Alloc:P1}",
+                decision?.Action, decision?.Confidence, decision?.AllocationPct);
+
+            return decision ?? new TradeDecision { Action = TradeAction.Hold, Confidence = 0.0m, Reasoning = "Deserialization failed" };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Exception calling Google Gemini API");
+            return new TradeDecision
+            {
+                Action = TradeAction.Hold,
+                Confidence = 0.0m,
+                Reasoning = $"Gemini Exception: {ex.Message}"
+            };
+        }
+    }
+
+    private async Task<TradeDecision> EvaluateWithOpenAiAsync(string apiKey, string systemPrompt, string userPrompt, CancellationToken ct)
+    {
+        var baseUrl = !string.IsNullOrWhiteSpace(_settings.OpenAi.BaseUrl)
+            ? _settings.OpenAi.BaseUrl
+            : "https://api.openai.com/v1/";
+
+        var requestBody = new
+        {
+            model = !string.IsNullOrWhiteSpace(_settings.OpenAi.Model) ? _settings.OpenAi.Model : "gpt-4o",
+            temperature = _settings.OpenAi.Temperature,
             messages = new[]
             {
                 new { role = "system", content = systemPrompt },
@@ -87,54 +241,15 @@ You must output strictly conforming JSON matching the provided schema.";
                         type = "object",
                         properties = new
                         {
-                            action = new
-                            {
-                                type = "string",
-                                @enum = new[] { "Hold", "Buy", "Sell", "Close" },
-                                description = "Trading action to take"
-                            },
-                            confidence = new
-                            {
-                                type = "number",
-                                description = "Certainty score from 0.0 (no conviction) to 1.0 (extreme conviction)"
-                            },
-                            allocationPct = new
-                            {
-                                type = "number",
-                                description = "Suggested percentage of portfolio to allocate (e.g. 0.015 for 1.5%)"
-                            },
-                            suggestedStopLossPct = new
-                            {
-                                type = "number",
-                                description = "Suggested stop-loss percentage from entry price (e.g. 0.02 for 2%)"
-                            },
-                            suggestedTakeProfitPct = new
-                            {
-                                type = "number",
-                                description = "Suggested take-profit percentage from entry price (e.g. 0.04 for 4%)"
-                            },
-                            reasoning = new
-                            {
-                                type = "string",
-                                description = "Concise quantitative justification based on indicators and market conditions"
-                            },
-                            keyIndicatorsCited = new
-                            {
-                                type = "array",
-                                items = new { type = "string" },
-                                description = "List of indicators driving this decision (e.g. RSI, MACD, EMA_CROSS)"
-                            }
+                            action = new { type = "string", @enum = new[] { "Hold", "Buy", "Sell", "Close" } },
+                            confidence = new { type = "number" },
+                            allocationPct = new { type = "number" },
+                            suggestedStopLossPct = new { type = "number" },
+                            suggestedTakeProfitPct = new { type = "number" },
+                            reasoning = new { type = "string" },
+                            keyIndicatorsCited = new { type = "array", items = new { type = "string" } }
                         },
-                        required = new[]
-                        {
-                            "action",
-                            "confidence",
-                            "allocationPct",
-                            "suggestedStopLossPct",
-                            "suggestedTakeProfitPct",
-                            "reasoning",
-                            "keyIndicatorsCited"
-                        },
+                        required = new[] { "action", "confidence", "allocationPct", "suggestedStopLossPct", "suggestedTakeProfitPct", "reasoning", "keyIndicatorsCited" },
                         additionalProperties = false
                     }
                 }
@@ -143,52 +258,27 @@ You must output strictly conforming JSON matching the provided schema.";
 
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Post, "chat/completions");
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _settings.ApiKey);
-            request.Content = JsonContent.Create(requestBody);
+            using var req = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(baseUrl), "chat/completions"));
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+            req.Content = JsonContent.Create(requestBody);
 
-            var response = await _httpClient.SendAsync(request, ct);
+            var response = await _httpClient.SendAsync(req, ct);
             var rawContent = await response.Content.ReadAsStringAsync(ct);
 
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogError("OpenAI API call failed with status {StatusCode}: {Error}", response.StatusCode, rawContent);
-                return new TradeDecision
-                {
-                    Action = TradeAction.Hold,
-                    Confidence = 0.0m,
-                    Reasoning = $"OpenAI API error: {response.StatusCode}"
-                };
+                _logger.LogError("OpenAI API call failed ({Status}): {Body}", response.StatusCode, rawContent);
+                return new TradeDecision { Action = TradeAction.Hold, Confidence = 0.0m, Reasoning = $"OpenAI error: {response.StatusCode}" };
             }
 
             var jsonDoc = JsonDocument.Parse(rawContent);
-            var choiceContent = jsonDoc.RootElement
-                .GetProperty("choices")[0]
-                .GetProperty("message")
-                .GetProperty("content")
-                .GetString();
-
-            if (string.IsNullOrWhiteSpace(choiceContent))
-            {
-                _logger.LogWarning("OpenAI returned empty message content.");
-                return new TradeDecision { Action = TradeAction.Hold, Confidence = 0.0m, Reasoning = "Empty LLM response" };
-            }
-
-            var decision = JsonSerializer.Deserialize<TradeDecision>(choiceContent, _jsonOptions);
-            _logger.LogInformation("ResearchEngine produced decision: Action={Action}, Confidence={Confidence}, Allocation={Alloc:P1}",
-                decision?.Action, decision?.Confidence, decision?.AllocationPct);
-
-            return decision ?? new TradeDecision { Action = TradeAction.Hold, Confidence = 0.0m, Reasoning = "Deserialization failed" };
+            var choice = jsonDoc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
+            return JsonSerializer.Deserialize<TradeDecision>(choice ?? "{}", _jsonOptions) ?? new TradeDecision();
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Exception during ResearchEngine market evaluation");
-            return new TradeDecision
-            {
-                Action = TradeAction.Hold,
-                Confidence = 0.0m,
-                Reasoning = $"Exception in ResearchEngine: {ex.Message}"
-            };
+            _logger.LogError(ex, "Exception calling OpenAI API");
+            return new TradeDecision { Action = TradeAction.Hold, Confidence = 0.0m, Reasoning = $"OpenAI Exception: {ex.Message}" };
         }
     }
 

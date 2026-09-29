@@ -44,7 +44,10 @@ builder.Services.AddHttpClient<IHyperliquidClient, HyperliquidClient>(client =>
 
 builder.Services.AddHttpClient<IResearchEngine, ResearchEngine>(client =>
 {
-    client.Timeout = TimeSpan.FromSeconds(botSettings.OpenAi.TimeoutSeconds > 0 ? botSettings.OpenAi.TimeoutSeconds : 30);
+    var timeout = botSettings.Llm.TimeoutSeconds > 0
+        ? botSettings.Llm.TimeoutSeconds
+        : (botSettings.OpenAi.TimeoutSeconds > 0 ? botSettings.OpenAi.TimeoutSeconds : 30);
+    client.Timeout = TimeSpan.FromSeconds(timeout);
 });
 
 // Register Core Domain Services
@@ -61,9 +64,26 @@ app.UseDefaultFiles();
 app.UseStaticFiles();
 
 // Visual Dashboard API Endpoints
-app.MapGet("/api/status", (IBotStateService state, IRiskManager risk) =>
+app.MapGet("/api/status", (IBotStateService state, IRiskManager risk, IResearchEngine research, IOptions<BotSettings> options) =>
 {
-    return Results.Json(state.GetSnapshot(risk.IsTradingFrozen, risk.DailyDrawdownPct));
+    var snapshot = state.GetSnapshot(risk.IsTradingFrozen, risk.DailyDrawdownPct);
+    var settings = options.Value;
+    return Results.Json(new
+    {
+        snapshot.IsRunning,
+        snapshot.LastCycleUtc,
+        snapshot.LatestContext,
+        snapshot.LatestDecision,
+        snapshot.LatestRisk,
+        snapshot.IsTradingFrozen,
+        snapshot.DailyDrawdownPct,
+        snapshot.RecentCycles,
+        activeProvider = research.ActiveProvider,
+        activeModel = research.ActiveModel,
+        useTestnet = settings.Hyperliquid.UseTestnet,
+        dryRun = settings.Execution.DryRun,
+        asset = settings.Hyperliquid.Asset
+    });
 });
 
 app.MapPost("/api/trigger", (IBotStateService state) =>

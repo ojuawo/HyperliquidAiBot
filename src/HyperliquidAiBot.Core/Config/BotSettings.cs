@@ -8,7 +8,8 @@ public class BotSettings
     public const string SectionName = "BotSettings";
 
     public HyperliquidSettings Hyperliquid { get; set; } = new();
-    public OpenAiSettings OpenAi { get; set; } = new();
+    public LlmSettings Llm { get; set; } = new();
+    public OpenAiSettings OpenAi { get; set; } = new(); // Backward compatibility
     public RiskRules Risk { get; set; } = new();
     public ExecutionSettings Execution { get; set; } = new();
 }
@@ -75,6 +76,32 @@ public class HyperliquidSettings
     /// Active WebSocket URL based on UseTestnet setting.
     /// </summary>
     public string ActiveWsUrl => UseTestnet ? TestnetWsUrl : MainnetWsUrl;
+}
+
+/// <summary>
+/// Quantitative AI Model configuration supporting Google Gemini and OpenAI.
+/// </summary>
+public class LlmSettings
+{
+    /// <summary>
+    /// LLM Provider: "Gemini" (default) or "OpenAI".
+    /// </summary>
+    public string Provider { get; set; } = "Gemini";
+
+    /// <summary>
+    /// API Key for Google Gemini (from Google AI Studio) or OpenAI.
+    /// </summary>
+    public string ApiKey { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Model name. For Gemini: "gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-pro", "gemini-1.5-flash".
+    /// For OpenAI: "gpt-4o", "gpt-4o-mini".
+    /// </summary>
+    public string Model { get; set; } = "gemini-2.5-flash";
+
+    public double Temperature { get; set; } = 0.2;
+    public string? BaseUrl { get; set; }
+    public int TimeoutSeconds { get; set; } = 30;
 }
 
 public class OpenAiSettings
